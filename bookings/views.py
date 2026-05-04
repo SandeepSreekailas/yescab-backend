@@ -1,3 +1,6 @@
+import logging
+from django.core.mail import send_mail
+from django.conf import settings
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -6,6 +9,27 @@ from rest_framework.permissions import IsAuthenticated
 from .models import Booking
 from .serializers import BookingSerializer, BookingStatusSerializer
 from accounts.permissions import IsAdminUser
+
+logger = logging.getLogger(__name__)
+
+from django.utils import timezone
+from datetime import timedelta
+
+# EMAIL FAILURE CRASH FIX: Safe synchronous email sending with exception handling
+def send_booking_email_safe(user_email, booking_id, passenger_name):
+    try:
+        subject = f"Booking Confirmation #{booking_id} - YesCab"
+        message = f"Hello {passenger_name},\n\nYour cab booking #{booking_id} has been received and is currently pending admin approval. We will notify you once it's confirmed.\n\nThank you for choosing YesCab!"
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [user_email],
+            fail_silently=False,
+        )
+    except Exception as e:
+        # Fails silently, logs the error, but does NOT crash the API
+        logger.error(f"Failed to send booking email for booking #{booking_id}: {str(e)}")
 
 
 class BookingListCreateView(generics.ListCreateAPIView):
@@ -17,15 +41,34 @@ class BookingListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        # CROSS-USER DATA ACCESS FIX: Strictly limits to authenticated user
         return Booking.objects.filter(user=self.request.user).order_by('-created_at')
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        # Automatically assign user to prevent user-injection
+        return serializer.save(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
+        # Prevent duplicate bookings: check if same user created a booking in the last 10 seconds
+        time_threshold = timezone.now() - timedelta(seconds=10)
+        recent_booking = Booking.objects.filter(
+            user=request.user,
+            created_at__gte=time_threshold
+        ).exists()
+        
+        if recent_booking:
+            return Response(
+                {"error": "Please wait a few seconds before creating another booking."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
+        booking = self.perform_create(serializer)
+        
+        # Dispatch email safely (synchronous but wrapped in try/except)
+        send_booking_email_safe(request.user.email, booking.id, booking.name)
+
         return Response(
             {
                 'message': 'Booking created successfully! We will confirm shortly.',
