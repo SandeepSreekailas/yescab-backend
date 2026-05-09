@@ -9,7 +9,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from .throttles import AuthScopedRateThrottle
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
@@ -81,7 +81,7 @@ class RegisterView(generics.CreateAPIView):
     """
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
-    throttle_classes = [AuthScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth'
 
     def create(self, request, *args, **kwargs):
@@ -113,7 +113,7 @@ class LoginView(APIView):
     Public endpoint. Validates credentials and returns JWT tokens + user info.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [AuthScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth'
 
     def post(self, request):
@@ -195,7 +195,7 @@ class ForgotPasswordView(APIView):
     Public. Sends a password reset email. Always returns success to prevent enumeration.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [AuthScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth'
 
     def post(self, request):
@@ -324,7 +324,7 @@ class ResendVerificationView(APIView):
     Authenticated. Resends the verification email.
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [AuthScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth'
 
     def post(self, request):
@@ -423,7 +423,7 @@ class GoogleOAuthView(APIView):
     creates or retrieves the user, and issues JWT tokens.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [AuthScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth'
 
     def post(self, request):

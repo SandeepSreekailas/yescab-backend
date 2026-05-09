@@ -127,13 +127,14 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
-        'accounts.throttles.AuthScopedRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '20/min',
-        'user': '60/min',
-        'auth': '5/15m',
-    }
+        'anon': config('ANON_THROTTLE_RATE', default='20/min'),
+        'user': config('USER_THROTTLE_RATE', default='60/min'),
+        'auth': config('AUTH_THROTTLE_RATE', default='5/15m'),
+    },
+    'EXCEPTION_HANDLER': 'yescab.exceptions.custom_exception_handler',
 }
 
 # Simple JWT configuration
@@ -263,3 +264,26 @@ LOGGING = {
         },
     },
 }
+
+# Monkey-patch DRF's SimpleRateThrottle to support multiplied periods like '15m'
+try:
+    from rest_framework.throttling import SimpleRateThrottle
+    import re
+
+    original_parse_rate = SimpleRateThrottle.parse_rate
+
+    def custom_parse_rate(self, rate):
+        if rate is None:
+            return (None, None)
+        num, period = rate.split('/')
+        match = re.match(r'^(\d+)([smhd])$', period)
+        if match:
+            multiplier = int(match.group(1))
+            unit = match.group(2)
+            base = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}[unit]
+            return (int(num), base * multiplier)
+        return original_parse_rate(self, rate)
+
+    SimpleRateThrottle.parse_rate = custom_parse_rate
+except ImportError:
+    pass
