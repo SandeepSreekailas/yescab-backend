@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.utils import timezone
@@ -43,6 +44,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    is_email_verified = models.BooleanField(
+        default=True,
+        help_text='True = existing/Google users. New registrations set to False until verified.'
+    )
     date_joined = models.DateTimeField(default=timezone.now)
 
     objects = UserManager()
@@ -63,3 +68,49 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def get_short_name(self):
         return self.name.split()[0] if self.name else self.email
+
+
+class PasswordResetToken(models.Model):
+    """Secure token for password reset flow. Expires after configured hours."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_tokens')
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'PasswordReset for {self.user.email} ({"used" if self.is_used else "active"})'
+
+    def is_expired(self):
+        from django.conf import settings
+        expiry_hours = getattr(settings, 'PASSWORD_RESET_TOKEN_EXPIRY_HOURS', 1)
+        from datetime import timedelta
+        return timezone.now() > self.created_at + timedelta(hours=expiry_hours)
+
+    def is_valid(self):
+        return not self.is_used and not self.is_expired()
+
+
+class EmailVerificationToken(models.Model):
+    """Secure token for email verification. Expires after configured hours."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_tokens')
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'EmailVerify for {self.user.email} ({"used" if self.is_used else "active"})'
+
+    def is_expired(self):
+        from django.conf import settings
+        expiry_hours = getattr(settings, 'EMAIL_VERIFY_TOKEN_EXPIRY_HOURS', 24)
+        from datetime import timedelta
+        return timezone.now() > self.created_at + timedelta(hours=expiry_hours)
+
+    def is_valid(self):
+        return not self.is_used and not self.is_expired()

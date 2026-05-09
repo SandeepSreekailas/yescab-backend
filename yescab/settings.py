@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Core Settings (loaded from .env)
 # ────────────────────────────────────────────────────────
 
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-fallback-key-DO-NOT-USE-IN-PROD')
+SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
@@ -66,7 +66,7 @@ WSGI_APPLICATION = 'yescab.wsgi.application'
 # Database — SQLite for dev, PostgreSQL-ready for prod
 # ────────────────────────────────────────────────────────
 
-from decouple import config
+
 
 DB_ENGINE = config('DB_ENGINE', default='sqlite3')
 
@@ -81,7 +81,9 @@ if DB_ENGINE == 'postgresql':
             'PORT': config('DB_PORT', default='5432'),
             'OPTIONS': {
                 'sslmode': 'require',  # 🔥 REQUIRED for Neon
+                'connect_timeout': 10,
             },
+            'CONN_MAX_AGE': 30,  # 🔥 keeps connection alive (important)
         }
     }
 else:
@@ -124,11 +126,13 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle'
+        'rest_framework.throttling.UserRateThrottle',
+        'accounts.throttles.AuthScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '20/min',
-        'user': '60/min'
+        'user': '60/min',
+        'auth': '5/15m',
     }
 }
 
@@ -159,15 +163,103 @@ CORS_ALLOW_CREDENTIALS = True
 # ────────────────────────────────────────────────────────
 
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST = config('EMAIL_HOST')
+EMAIL_PORT = config('EMAIL_PORT', cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='YesCab <no-reply@yescab.com>')
+ADMIN_EMAIL = config('ADMIN_EMAIL', default='')
 
 # ────────────────────────────────────────────────────────
 # Google OAuth2
 # ────────────────────────────────────────────────────────
 
 GOOGLE_OAUTH2_CLIENT_ID = config('GOOGLE_OAUTH2_CLIENT_ID', default='')
+
+# ────────────────────────────────────────────────────────
+# Frontend URL (for email links: verification, password reset)
+# ────────────────────────────────────────────────────────
+
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
+
+# Token expiry (hours)
+PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
+EMAIL_VERIFY_TOKEN_EXPIRY_HOURS = 24
+
+# ────────────────────────────────────────────────────────
+# Payload size limit (5 MB)
+# ────────────────────────────────────────────────────────
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+
+# ────────────────────────────────────────────────────────
+# Production Security (only when DEBUG = False)
+# ────────────────────────────────────────────────────────
+
+if not DEBUG:
+    # HTTPS enforcement
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+    # HSTS — tell browsers to always use HTTPS (1 year)
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # Secure cookies — only sent over HTTPS
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # Prevent clickjacking
+    X_FRAME_OPTIONS = 'DENY'
+
+    # Prevent MIME-type sniffing
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# ────────────────────────────────────────────────────────
+# Structured Logging
+# ────────────────────────────────────────────────────────
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] [{levelname}] [{name}] {message}',
+            'style': '{',
+        },
+    },
+    'filters': {
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+        },
+        'django.security': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'accounts': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'bookings': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

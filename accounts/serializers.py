@@ -17,10 +17,16 @@ class RegisterSerializer(serializers.ModelSerializer):
         label='Confirm Password',
         style={'input_type': 'password'}
     )
+    agreed_to_terms = serializers.BooleanField(write_only=True)
 
     class Meta:
         model = User
-        fields = ['name', 'email', 'phone', 'place', 'password', 'password2']
+        fields = ['name', 'email', 'phone', 'place', 'password', 'password2', 'agreed_to_terms']
+
+    def validate_agreed_to_terms(self, value):
+        if not value:
+            raise serializers.ValidationError('You must agree to the Terms of Service and Privacy Policy.')
+        return value
 
     def validate_email(self, value):
         if User.objects.filter(email=value.lower()).exists():
@@ -41,8 +47,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password2')
+        validated_data.pop('agreed_to_terms')
         password = validated_data.pop('password')
-        user = User(**validated_data)
+        user = User(**validated_data, is_email_verified=False)
         user.set_password(password)
         user.save()
         return user
@@ -77,8 +84,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'date_joined']
-        read_only_fields = ['id', 'email', 'date_joined', 'is_admin']
+        fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'is_email_verified', 'date_joined']
+        read_only_fields = ['id', 'email', 'date_joined', 'is_admin', 'is_email_verified']
 
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
@@ -86,7 +93,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'date_joined']
+        fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'is_email_verified', 'date_joined']
         read_only_fields = ['id', 'email', 'date_joined']
 
 
@@ -144,10 +151,9 @@ class GoogleOAuthSerializer(serializers.Serializer):
                 clock_skew_in_seconds=60,
             )
         except Exception as e:
-            print(f'\n[GOOGLE AUTH ERROR] {type(e).__name__}: {e}\n')
             logger.error(f'Google token verification failed: {type(e).__name__}: {e}')
             raise serializers.ValidationError(
-                f'Google token verification failed: {e}'
+                'Google authentication failed. Please try again.'
             )
 
         # Ensure the token is from Google
@@ -178,6 +184,7 @@ class GoogleOAuthSerializer(serializers.Serializer):
                 'name': info['name'],
                 'phone': '',
                 'place': '',
+                'is_email_verified': True,
             },
         )
         # If existing user, update name if blank
@@ -185,9 +192,47 @@ class GoogleOAuthSerializer(serializers.Serializer):
             user.name = info['name']
             user.save(update_fields=['name'])
 
+        # Ensure Google users are always email-verified
+        if not user.is_email_verified:
+            user.is_email_verified = True
+            user.save(update_fields=['is_email_verified'])
+
         # Ensure user has an unusable password if created via OAuth
         if created:
             user.set_unusable_password()
             user.save()
 
         return user
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    """Accepts email for password reset. Always succeeds to prevent user enumeration."""
+    email = serializers.EmailField()
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    """Validates reset token and sets new password."""
+    token = serializers.UUIDField()
+    new_password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        validators=[validate_password],
+        style={'input_type': 'password'}
+    )
+    new_password2 = serializers.CharField(write_only=True, style={'input_type': 'password'})
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['new_password2']:
+            raise serializers.ValidationError({'new_password2': 'Passwords do not match.'})
+        return attrs
+
+
+class DeleteAccountSerializer(serializers.Serializer):
+    """Requires password confirmation to delete account."""
+    password = serializers.CharField(write_only=True, style={'input_type': 'password'})
+
+    def validate_password(self, value):
+        user = self.context['request'].user
+        if user.has_usable_password() and not user.check_password(value):
+            raise serializers.ValidationError('Password is incorrect.')
+        return value

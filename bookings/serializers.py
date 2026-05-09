@@ -12,6 +12,7 @@ class BookingSerializer(serializers.ModelSerializer):
     user_info = UserSerializer(source='user', read_only=True)
     trip_type_display = serializers.CharField(source='get_trip_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    notes = serializers.CharField(max_length=500, required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = Booking
@@ -56,12 +57,6 @@ class BookingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Enter a valid phone number (7–15 digits).')
         return value
 
-    def validate_date(self, value):
-        today = timezone.now().date()
-        if value < today:
-            raise serializers.ValidationError('Travel date cannot be in the past.')
-        return value
-
     def validate_from_location(self, value):
         if len(value.strip()) < 3:
             raise serializers.ValidationError('Pickup location must be at least 3 characters.')
@@ -92,6 +87,18 @@ class BookingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Longitude must be between -180 and 180.')
         return value
 
+    def validate_date(self, value):
+        from dateutil.relativedelta import relativedelta
+        today = timezone.now().date()
+        if value < today:
+            raise serializers.ValidationError('Travel date cannot be in the past.')
+        max_date = today + relativedelta(months=6)
+        if value > max_date:
+            raise serializers.ValidationError(
+                f'Booking allowed only within the next 6 months (until {max_date}).'
+            )
+        return value
+
     def validate(self, attrs):
         from_loc = attrs.get('from_location', '')
         to_loc = attrs.get('to_location', '')
@@ -114,6 +121,30 @@ class BookingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'drop_lat': 'Both drop latitude and longitude must be provided together.'}
             )
+
+        # ── Ernakulam geo-restriction (must match frontend bounding box) ──
+        ERNAKULAM = {'min_lat': 9.7, 'max_lat': 10.2, 'min_lng': 76.1, 'max_lng': 76.5}
+
+        for prefix, label in [('pickup', 'Pickup'), ('drop', 'Drop')]:
+            lat = attrs.get(f'{prefix}_lat')
+            lng = attrs.get(f'{prefix}_lng')
+            if lat is not None and lng is not None:
+                if not (ERNAKULAM['min_lat'] <= lat <= ERNAKULAM['max_lat']
+                        and ERNAKULAM['min_lng'] <= lng <= ERNAKULAM['max_lng']):
+                    raise serializers.ValidationError({
+                        f'{prefix}_lat': f'{label} coordinates must be within Ernakulam district '
+                                         f'(lat {ERNAKULAM["min_lat"]}–{ERNAKULAM["max_lat"]}, '
+                                         f'lng {ERNAKULAM["min_lng"]}–{ERNAKULAM["max_lng"]}).'
+                    })
+
+        # ── Past-time-on-today check ──
+        booking_date = attrs.get('date')
+        booking_time = attrs.get('time')
+        if booking_date and booking_time:
+            if booking_date == timezone.now().date() and booking_time < timezone.now().time():
+                raise serializers.ValidationError(
+                    {'time': 'Pickup time cannot be in the past for today\'s date.'}
+                )
 
         return attrs
 
