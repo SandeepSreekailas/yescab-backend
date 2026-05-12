@@ -52,10 +52,19 @@ class BookingSerializer(serializers.ModelSerializer):
 
     def validate_phone_number(self, value):
         import re
-        cleaned = re.sub(r'[\s\-\(\)\+]', '', value)
-        if not cleaned.isdigit() or not (7 <= len(cleaned) <= 15):
-            raise serializers.ValidationError('Enter a valid phone number (7–15 digits).')
-        return value
+        if not value:
+            raise serializers.ValidationError('Phone number is required.')
+        val_str = str(value).strip()
+        cleaned = re.sub(r'[\s\-\(\)\+]', '', val_str)
+        if cleaned.startswith('91') and len(cleaned) == 12:
+            cleaned = cleaned[2:]
+        if not cleaned.isdigit():
+            raise serializers.ValidationError('Phone number must contain only digits.')
+        if len(cleaned) != 10:
+            raise serializers.ValidationError('Phone number must be exactly 10 digits.')
+        if cleaned[0] not in '6789':
+            raise serializers.ValidationError('Indian mobile numbers must start with 6, 7, 8, or 9.')
+        return f'+91 {cleaned}'
 
     def validate_from_location(self, value):
         if len(value.strip()) < 3:

@@ -4,6 +4,23 @@ from django.contrib.auth.password_validation import validate_password
 from .models import User
 
 
+def validate_indian_phone(value):
+    import re
+    if not value:
+        raise serializers.ValidationError('Phone number is required.')
+    val_str = str(value).strip()
+    cleaned = re.sub(r'[\s\-\(\)\+]', '', val_str)
+    if cleaned.startswith('91') and len(cleaned) == 12:
+        cleaned = cleaned[2:]
+    if not cleaned.isdigit():
+        raise serializers.ValidationError('Phone number must contain only digits.')
+    if len(cleaned) != 10:
+        raise serializers.ValidationError('Phone number must be exactly 10 digits.')
+    if cleaned[0] not in '6789':
+        raise serializers.ValidationError('Indian mobile numbers must start with 6, 7, 8, or 9.')
+    return f'+91 {cleaned}'
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     """Serializer for new user registration with password confirmation."""
     password = serializers.CharField(
@@ -34,11 +51,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return value.lower()
 
     def validate_phone(self, value):
-        import re
-        cleaned = re.sub(r'[\s\-\(\)\+]', '', value)
-        if not cleaned.isdigit() or not (7 <= len(cleaned) <= 15):
-            raise serializers.ValidationError('Enter a valid phone number (7–15 digits).')
-        return value
+        return validate_indian_phone(value)
 
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:
@@ -87,6 +100,9 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'is_email_verified', 'date_joined']
         read_only_fields = ['id', 'email', 'date_joined', 'is_admin', 'is_email_verified']
 
+    def validate_phone(self, value):
+        return validate_indian_phone(value)
+
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
     """Serializer for admin to update user fields including is_admin and is_active."""
@@ -95,6 +111,9 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'name', 'email', 'phone', 'place', 'is_admin', 'is_active', 'is_email_verified', 'date_joined']
         read_only_fields = ['id', 'email', 'date_joined']
+
+    def validate_phone(self, value):
+        return validate_indian_phone(value)
 
 
 class ChangePasswordSerializer(serializers.Serializer):

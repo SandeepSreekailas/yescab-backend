@@ -1,5 +1,6 @@
 import logging
 from threading import Thread
+import resend
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -38,10 +39,21 @@ def _send_email_background(subject, body, to_email):
     """Sends a single email in a background thread."""
     close_old_connections()
     try:
-        send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [to_email], fail_silently=False)
-        logger.info(f'Email sent: "{subject}" -> {to_email}')
+        if getattr(settings, 'RESEND_API_KEY', ''):
+            resend.api_key = settings.RESEND_API_KEY
+            r = resend.Emails.send({
+                "from": settings.DEFAULT_FROM_EMAIL,
+                "to": to_email,
+                "subject": subject,
+                "text": body,
+            })
+            logger.info(f'Email sent via Resend: "{subject}" -> {to_email}. ID: {getattr(r, "id", r)}')
+        else:
+            logger.warning(f'RESEND_API_KEY is not configured. Simulating email via django send_mail.')
+            send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [to_email], fail_silently=False)
+            logger.info(f'Email sent via send_mail fallback: "{subject}" -> {to_email}')
     except Exception as e:
-        logger.error(f'Email failed: "{subject}" -> {to_email}: {e}')
+        logger.error(f'Email dispatch failed (Resend/SMTP): "{subject}" -> {to_email}: {e}')
     close_old_connections()
 
 

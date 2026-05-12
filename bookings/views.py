@@ -1,4 +1,5 @@
 import logging
+import resend
 from django.core.mail import send_mail
 from django.conf import settings
 from rest_framework import generics, status
@@ -31,55 +32,72 @@ def _send_booking_emails(email_data):
     close_old_connections()  # prevent stale DB connections in thread
 
     booking_id = email_data['booking_id']
+    user_email = email_data['user_email']
+    passenger_name = email_data['passenger_name']
 
     # 1. User confirmation email
+    user_subject = f"Booking Confirmation #{booking_id} - YesCab"
+    user_body = (
+        f"Hello {passenger_name},\n\n"
+        f"Your cab booking #{booking_id} has been received and is currently "
+        f"pending admin approval. We will notify you once it's confirmed.\n\n"
+        f"Thank you for choosing YesCab!"
+    )
+
     try:
-        send_mail(
-            f"Booking Confirmation #{booking_id} - YesCab",
-            (
-                f"Hello {email_data['passenger_name']},\n\n"
-                f"Your cab booking #{booking_id} has been received and is currently "
-                f"pending admin approval. We will notify you once it's confirmed.\n\n"
-                f"Thank you for choosing YesCab!"
-            ),
-            settings.DEFAULT_FROM_EMAIL,
-            [email_data['user_email']],
-            fail_silently=False,
-        )
-        logger.info(f"User confirmation email sent for booking #{booking_id}")
+        if getattr(settings, 'RESEND_API_KEY', ''):
+            resend.api_key = settings.RESEND_API_KEY
+            r = resend.Emails.send({
+                "from": settings.DEFAULT_FROM_EMAIL,
+                "to": user_email,
+                "subject": user_subject,
+                "text": user_body,
+            })
+            logger.info(f"User confirmation email sent via Resend for booking #{booking_id}. ID: {getattr(r, 'id', r)}")
+        else:
+            logger.warning(f"RESEND_API_KEY is not set. Simulating user email via django send_mail.")
+            send_mail(user_subject, user_body, settings.DEFAULT_FROM_EMAIL, [user_email], fail_silently=False)
+            logger.info(f"User confirmation email printed to console for booking #{booking_id}")
     except Exception as e:
-        logger.error(f"Failed to send user email for booking #{booking_id}: {e}")
+        logger.error(f"Failed to send user email (Resend/SMTP) for booking #{booking_id}: {e}")
 
     # 2. Admin notification email
     admin_email = email_data.get('admin_email')
     if admin_email:
+        admin_subject = "New Booking Received - YesCab"
+        admin_body = (
+            f"A new booking has been received.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Booking ID    : #{booking_id}\n"
+            f"Customer Name : {passenger_name}\n"
+            f"Email         : {user_email}\n"
+            f"Phone         : {email_data['phone_number']}\n"
+            f"Trip Type     : {email_data['trip_type_display']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Pickup        : {email_data['pickup']}\n"
+            f"Drop          : {email_data['drop']}\n"
+            f"Date          : {email_data['date']}\n"
+            f"Time          : {email_data['time']}\n"
+            f"Passengers    : {email_data['num_people']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Please review and approve/reject this booking in the admin panel."
+        )
         try:
-            send_mail(
-                "New Booking Received - YesCab",
-                (
-                    f"A new booking has been received.\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Booking ID    : #{booking_id}\n"
-                    f"Customer Name : {email_data['passenger_name']}\n"
-                    f"Email         : {email_data['user_email']}\n"
-                    f"Phone         : {email_data['phone_number']}\n"
-                    f"Trip Type     : {email_data['trip_type_display']}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Pickup        : {email_data['pickup']}\n"
-                    f"Drop          : {email_data['drop']}\n"
-                    f"Date          : {email_data['date']}\n"
-                    f"Time          : {email_data['time']}\n"
-                    f"Passengers    : {email_data['num_people']}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"Please review and approve/reject this booking in the admin panel."
-                ),
-                settings.DEFAULT_FROM_EMAIL,
-                [admin_email],
-                fail_silently=False,
-            )
-            logger.info(f"Admin notification sent for booking #{booking_id}")
+            if getattr(settings, 'RESEND_API_KEY', ''):
+                resend.api_key = settings.RESEND_API_KEY
+                r = resend.Emails.send({
+                    "from": settings.DEFAULT_FROM_EMAIL,
+                    "to": admin_email,
+                    "subject": admin_subject,
+                    "text": admin_body,
+                })
+                logger.info(f"Admin notification sent via Resend for booking #{booking_id}. ID: {getattr(r, 'id', r)}")
+            else:
+                logger.warning(f"RESEND_API_KEY is not set. Simulating admin email via django send_mail.")
+                send_mail(admin_subject, admin_body, settings.DEFAULT_FROM_EMAIL, [admin_email], fail_silently=False)
+                logger.info(f"Admin notification printed to console for booking #{booking_id}")
         except Exception as e:
-            logger.error(f"Failed to send admin notification for booking #{booking_id}: {e}")
+            logger.error(f"Failed to send admin notification (Resend/SMTP) for booking #{booking_id}: {e}")
 
     close_old_connections()  # clean up thread's DB connections
 
@@ -211,6 +229,7 @@ def _send_status_change_email(email_data):
 
     booking_id = email_data['booking_id']
     new_status = email_data['new_status']
+    user_email = email_data['user_email']
 
     if new_status == 'approved':
         subject = f"Your Booking is Confirmed \U0001f696 - YesCab #{booking_id}"
@@ -221,31 +240,38 @@ def _send_status_change_email(email_data):
         status_line = "REJECTED ❌"
         closing = "Unfortunately, we could not accommodate this booking. Please try again or contact support."
 
+    body = (
+        f"Hello {email_data['passenger_name']},\n\n"
+        f"Your booking status has been updated.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Booking ID : #{booking_id}\n"
+        f"Status     : {status_line}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Pickup     : {email_data['pickup']}\n"
+        f"Drop       : {email_data['drop']}\n"
+        f"Date       : {email_data['date']}\n"
+        f"Time       : {email_data['time']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{closing}\n\n"
+        f"Thank you for choosing YesCab!"
+    )
+
     try:
-        send_mail(
-            subject,
-            (
-                f"Hello {email_data['passenger_name']},\n\n"
-                f"Your booking status has been updated.\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Booking ID : #{booking_id}\n"
-                f"Status     : {status_line}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Pickup     : {email_data['pickup']}\n"
-                f"Drop       : {email_data['drop']}\n"
-                f"Date       : {email_data['date']}\n"
-                f"Time       : {email_data['time']}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{closing}\n\n"
-                f"Thank you for choosing YesCab!"
-            ),
-            settings.DEFAULT_FROM_EMAIL,
-            [email_data['user_email']],
-            fail_silently=False,
-        )
-        logger.info(f"Status change email ({new_status}) sent for booking #{booking_id}")
+        if getattr(settings, 'RESEND_API_KEY', ''):
+            resend.api_key = settings.RESEND_API_KEY
+            r = resend.Emails.send({
+                "from": settings.DEFAULT_FROM_EMAIL,
+                "to": user_email,
+                "subject": subject,
+                "text": body,
+            })
+            logger.info(f"Status change email ({new_status}) sent via Resend for booking #{booking_id}. ID: {getattr(r, 'id', r)}")
+        else:
+            logger.warning(f"RESEND_API_KEY is not set. Simulating status change email via django send_mail.")
+            send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [user_email], fail_silently=False)
+            logger.info(f"Status change email ({new_status}) printed to console for booking #{booking_id}")
     except Exception as e:
-        logger.error(f"Failed to send status change email for booking #{booking_id}: {e}")
+        logger.error(f"Failed to send status change email (Resend/SMTP) for booking #{booking_id}: {e}")
 
     close_old_connections()
 
