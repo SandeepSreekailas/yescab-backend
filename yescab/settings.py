@@ -181,6 +181,7 @@ EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='onboarding@resend.dev')
 ADMIN_EMAIL = config('ADMIN_EMAIL', default='')
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
+ADMIN_WHATSAPP_NUMBER = config('ADMIN_WHATSAPP_NUMBER', default='')
 
 # ────────────────────────────────────────────────────────
 # Google OAuth2
