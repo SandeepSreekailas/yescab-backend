@@ -18,6 +18,8 @@ class Booking(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('approved', 'Approved'),
+        ('driver_assigned', 'Driver Assigned'),
+        ('completed', 'Completed'),
         ('rejected', 'Rejected'),
     ]
 
@@ -56,11 +58,12 @@ class Booking(models.Model):
     drop_lng = models.FloatField(blank=True, null=True, verbose_name='Drop Longitude')
 
     status = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=STATUS_CHOICES,
         default='pending',
         verbose_name='Booking Status',
     )
+    admin_note = models.TextField(blank=True, null=True, verbose_name='Admin Note')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

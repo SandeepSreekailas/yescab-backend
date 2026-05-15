@@ -38,10 +38,11 @@ class BookingSerializer(serializers.ModelSerializer):
             'notes',
             'status',
             'status_display',
+            'admin_note',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'user', 'status', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'status', 'admin_note', 'created_at', 'updated_at']
 
     def validate_num_people(self, value):
         if value < 1:
@@ -160,16 +161,16 @@ class BookingSerializer(serializers.ModelSerializer):
 
 class BookingStatusSerializer(serializers.ModelSerializer):
     """
-    Minimal serializer for admin: only exposes status and notes for PATCH updates.
+    Minimal serializer for admin: exposes status, notes, and admin_note for PATCH updates.
     """
 
     class Meta:
         model = Booking
-        fields = ['status', 'notes']
+        fields = ['status', 'notes', 'admin_note']
 
     def validate_status(self, value):
-        if value not in ['pending', 'approved', 'rejected']:
+        if value not in ['pending', 'approved', 'driver_assigned', 'completed', 'rejected']:
             raise serializers.ValidationError(
-                'Status must be one of: pending, approved, rejected.'
+                'Status must be one of: pending, approved, driver_assigned, completed, rejected.'
             )
         return value

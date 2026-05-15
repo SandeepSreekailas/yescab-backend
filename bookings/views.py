@@ -235,10 +235,21 @@ def _send_status_change_email(email_data):
         subject = f"Your Booking is Confirmed \U0001f696 - YesCab #{booking_id}"
         status_line = "APPROVED ✅"
         closing = "Your cab has been confirmed. We look forward to serving you!"
+    elif new_status == 'driver_assigned':
+        subject = f"Driver Assigned to Your Booking \U0001f698 - YesCab #{booking_id}"
+        status_line = "DRIVER ASSIGNED 🚖"
+        closing = "A driver has been assigned to your booking. Have a safe journey!"
+    elif new_status == 'completed':
+        subject = f"Booking Completed \U0001f3c1 - YesCab #{booking_id}"
+        status_line = "COMPLETED 🏁"
+        closing = "Your trip is completed. Thank you for riding with YesCab!"
     else:
         subject = f"Your Booking was Rejected \u274c - YesCab #{booking_id}"
         status_line = "REJECTED ❌"
         closing = "Unfortunately, we could not accommodate this booking. Please try again or contact support."
+
+    admin_note = email_data.get('admin_note')
+    admin_note_section = f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAdmin Note : {admin_note}\n" if admin_note else ""
 
     body = (
         f"Hello {email_data['passenger_name']},\n\n"
@@ -251,8 +262,9 @@ def _send_status_change_email(email_data):
         f"Drop       : {email_data['drop']}\n"
         f"Date       : {email_data['date']}\n"
         f"Time       : {email_data['time']}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{closing}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{admin_note_section}"
+        f"\n{closing}\n\n"
         f"Thank you for choosing YesCab!"
     )
 
@@ -279,7 +291,7 @@ def _send_status_change_email(email_data):
 def dispatch_status_change_email(booking):
     """
     Extracts booking data into a plain dict and fires a daemon thread.
-    Called only when status actually changes to approved/rejected.
+    Called only when status actually changes.
     """
     email_data = {
         'booking_id': booking.id,
@@ -290,6 +302,7 @@ def dispatch_status_change_email(booking):
         'drop': booking.drop_address or booking.to_location,
         'date': str(booking.date),
         'time': str(booking.time),
+        'admin_note': booking.admin_note,
     }
 
     thread = Thread(target=_send_status_change_email, args=(email_data,), daemon=True)
@@ -300,7 +313,7 @@ def dispatch_status_change_email(booking):
 class AdminBookingStatusView(APIView):
     """
     PATCH /api/bookings/admin/<pk>/status/
-    Admin only. Update booking status to approved or rejected, with optional notes.
+    Admin only. Update booking status to approved or rejected, with optional notes and admin_note.
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -319,9 +332,9 @@ class AdminBookingStatusView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        # Send email only if status actually changed to approved/rejected
+        # Send email only if status actually changed
         new_status = booking.status
-        if new_status != old_status and new_status in ('approved', 'rejected'):
+        if new_status != old_status and new_status in ('approved', 'driver_assigned', 'completed', 'rejected'):
             try:
                 dispatch_status_change_email(booking)
             except Exception as e:
