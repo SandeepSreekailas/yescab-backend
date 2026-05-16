@@ -7,8 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Booking
-from .serializers import BookingSerializer, BookingStatusSerializer
+from .models import Booking, Vehicle
+from .serializers import BookingSerializer, BookingStatusSerializer, VehicleSerializer
 from accounts.permissions import IsAdminUser
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,24 @@ def dispatch_booking_emails(booking, user_email):
     logger.info(f"Email thread dispatched for booking #{booking.id}")
 
 
+def auto_reject_expired_bookings():
+    """
+    Checks for pending bookings older than 1 hour and auto-rejects them.
+    This lightweight check runs before fetching bookings to ensure state is fresh.
+    """
+    threshold = timezone.now() - timedelta(hours=1)
+    expired = Booking.objects.filter(status='pending', created_at__lt=threshold)
+    if expired.exists():
+        for b in expired:
+            b.status = 'rejected'
+            b.rejection_reason = 'No admin response within allowed time'
+            b.save(update_fields=['status', 'rejection_reason', 'updated_at'])
+            # Attempt to send status change email, ignoring errors to prevent blocking
+            try:
+                dispatch_status_change_email(b)
+            except Exception as e:
+                logger.error(f"Auto-reject email failed for #{b.id}: {e}")
+
 class BookingListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/bookings/ — List all bookings belonging to the authenticated user.
@@ -135,6 +153,7 @@ class BookingListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        auto_reject_expired_bookings()
         # CROSS-USER DATA ACCESS FIX: Strictly limits to authenticated user
         return Booking.objects.filter(user=self.request.user).order_by('-created_at')
 
@@ -188,6 +207,15 @@ class BookingDetailView(generics.RetrieveAPIView):
 # Admin Views
 # ─────────────────────────────────────────────────────
 
+class VehicleListView(generics.ListAPIView):
+    """
+    GET /api/bookings/admin/vehicles/
+    Admin only. Returns all vehicles for assignment.
+    """
+    serializer_class = VehicleSerializer
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    queryset = Vehicle.objects.all()
+
 class AdminBookingListView(generics.ListAPIView):
     """
     GET /api/bookings/admin/all/
@@ -198,6 +226,7 @@ class AdminBookingListView(generics.ListAPIView):
 
     def get_queryset(self):
         from django.db.models import Q
+        auto_reject_expired_bookings()
 
         queryset = Booking.objects.all().select_related('user').order_by('-created_at')
 
@@ -243,13 +272,25 @@ def _send_status_change_email(email_data):
         subject = f"Booking Completed \U0001f3c1 - YesCab #{booking_id}"
         status_line = "COMPLETED 🏁"
         closing = "Your trip is completed. Thank you for riding with YesCab!"
+    elif new_status == 'cancelled':
+        subject = f"Booking Cancelled \u26a0\ufe0f - YesCab #{booking_id}"
+        status_line = "CANCELLED ✋"
+        closing = "Your booking has been cancelled as requested. We hope to see you again soon."
     else:
         subject = f"Your Booking was Rejected \u274c - YesCab #{booking_id}"
         status_line = "REJECTED ❌"
         closing = "Unfortunately, we could not accommodate this booking. Please try again or contact support."
 
     admin_note = email_data.get('admin_note')
-    admin_note_section = f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAdmin Note : {admin_note}\n" if admin_note else ""
+    rejection_reason = email_data.get('rejection_reason')
+    
+    admin_note_section = ""
+    if admin_note or (new_status == 'rejected' and rejection_reason):
+        admin_note_section += f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        if new_status == 'rejected' and rejection_reason:
+            admin_note_section += f"Rejection Reason: {rejection_reason}\n"
+        if admin_note:
+            admin_note_section += f"Admin Note : {admin_note}\n"
 
     body = (
         f"Hello {email_data['passenger_name']},\n\n"
@@ -303,6 +344,7 @@ def dispatch_status_change_email(booking):
         'date': str(booking.date),
         'time': str(booking.time),
         'admin_note': booking.admin_note,
+        'rejection_reason': booking.rejection_reason,
     }
 
     thread = Thread(target=_send_status_change_email, args=(email_data,), daemon=True)
@@ -313,7 +355,8 @@ def dispatch_status_change_email(booking):
 class AdminBookingStatusView(APIView):
     """
     PATCH /api/bookings/admin/<pk>/status/
-    Admin only. Update booking status to approved or rejected, with optional notes and admin_note.
+    Admin only. Update booking status with strict state-machine enforcement.
+    Finalized bookings (completed/rejected/cancelled) cannot be modified.
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -326,6 +369,15 @@ class AdminBookingStatusView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Guard: block all modifications on finalized bookings
+        TERMINAL = {'completed', 'rejected', 'cancelled'}
+        if booking.status in TERMINAL:
+            label = 'cancelled by customer' if booking.status == 'cancelled' else booking.status
+            return Response(
+                {'error': f'Booking #{pk} is {label} and cannot be modified.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         old_status = booking.status
 
         serializer = BookingStatusSerializer(booking, data=request.data, partial=True)
@@ -334,7 +386,7 @@ class AdminBookingStatusView(APIView):
 
         # Send email only if status actually changed
         new_status = booking.status
-        if new_status != old_status and new_status in ('approved', 'driver_assigned', 'completed', 'rejected'):
+        if new_status != old_status:
             try:
                 dispatch_status_change_email(booking)
             except Exception as e:
@@ -342,7 +394,53 @@ class AdminBookingStatusView(APIView):
 
         return Response(
             {
-                'message': f'Booking #{pk} status updated to "{booking.status}".',
+                'message': f'Booking #{pk} status updated to "{booking.get_status_display()}".',
                 'booking': BookingSerializer(booking).data,
             }
         )
+
+
+class BookingCancelView(APIView):
+    """
+    POST /api/bookings/<pk>/cancel/
+    User only. Cancel own booking if it's in a cancellable state.
+    Valid cancellable states: pending, approved, driver_assigned.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            booking = Booking.objects.select_related('user').get(pk=pk, user=request.user)
+        except Booking.DoesNotExist:
+            return Response(
+                {'error': f'Booking #{pk} not found or you do not have permission to cancel it.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        CANCELLABLE = {'pending', 'approved', 'driver_assigned'}
+        if booking.status not in CANCELLABLE:
+            status_labels = {
+                'completed': 'This ride has already been completed.',
+                'rejected': 'This booking was already rejected by admin.',
+                'cancelled': 'This booking has already been cancelled.',
+            }
+            msg = status_labels.get(booking.status, f'Booking cannot be cancelled from "{booking.status}" state.')
+            return Response(
+                {'error': msg},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.status = 'cancelled'
+        booking.cancelled_at = timezone.now()
+        booking.save()
+
+        # Notify user and admin about cancellation
+        dispatch_status_change_email(booking)
+
+        return Response(
+            {
+                'message': f'Booking #{pk} has been cancelled successfully.',
+                'booking': BookingSerializer(booking).data,
+            }
+        )
+

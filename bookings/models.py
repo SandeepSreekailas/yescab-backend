@@ -1,6 +1,16 @@
 from django.db import models
 from django.conf import settings
 
+class Vehicle(models.Model):
+    STATUS_CHOICES = [
+        ('available', 'Available'),
+        ('maintenance', 'Maintenance'),
+    ]
+    name = models.CharField(max_length=100)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
+
+    def __str__(self):
+        return f"{self.name} ({self.get_status_display()})"
 
 class Booking(models.Model):
     """
@@ -21,6 +31,7 @@ class Booking(models.Model):
         ('driver_assigned', 'Driver Assigned'),
         ('completed', 'Completed'),
         ('rejected', 'Rejected'),
+        ('cancelled', 'Cancelled'),
     ]
 
     user = models.ForeignKey(
@@ -64,6 +75,13 @@ class Booking(models.Model):
         verbose_name='Booking Status',
     )
     admin_note = models.TextField(blank=True, null=True, verbose_name='Admin Note')
+    rejection_reason = models.CharField(max_length=255, blank=True, null=True, verbose_name='Rejection Reason')
+    vehicle = models.ForeignKey(
+        Vehicle, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='bookings', verbose_name='Assigned Vehicle'
+    )
+    expected_duration_hours = models.PositiveIntegerField(default=4, verbose_name='Expected Duration (Hours)')
+    cancelled_at = models.DateTimeField(blank=True, null=True, verbose_name='Cancelled At')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

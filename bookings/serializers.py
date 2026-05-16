@@ -1,7 +1,25 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Booking
+from .models import Booking, Vehicle
 from accounts.serializers import UserSerializer
+
+class VehicleSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    class Meta:
+        model = Vehicle
+        fields = ['id', 'name', 'status', 'status_display']
+
+# ── Valid state transitions (source of truth for entire system) ──
+VALID_TRANSITIONS = {
+    'pending':         ['approved', 'rejected', 'cancelled'],
+    'approved':        ['driver_assigned', 'completed', 'cancelled'],
+    'driver_assigned': ['completed', 'cancelled'],
+    'completed':       [],   # Terminal state
+    'rejected':        [],   # Terminal state
+    'cancelled':       [],   # Terminal state
+}
+
+TERMINAL_STATES = {'completed', 'rejected', 'cancelled'}
 
 
 class BookingSerializer(serializers.ModelSerializer):
@@ -13,6 +31,8 @@ class BookingSerializer(serializers.ModelSerializer):
     trip_type_display = serializers.CharField(source='get_trip_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     notes = serializers.CharField(max_length=500, required=False, allow_blank=True, allow_null=True)
+    is_finalized = serializers.SerializerMethodField()
+    vehicle_info = VehicleSerializer(source='vehicle', read_only=True)
 
     class Meta:
         model = Booking
@@ -39,10 +59,20 @@ class BookingSerializer(serializers.ModelSerializer):
             'status',
             'status_display',
             'admin_note',
+            'rejection_reason',
+            'vehicle',
+            'vehicle_info',
+            'expected_duration_hours',
+            'cancelled_at',
+            'is_finalized',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'user', 'status', 'admin_note', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'status', 'admin_note', 'rejection_reason', 'vehicle', 'cancelled_at', 'is_finalized', 'created_at', 'updated_at']
+
+    def get_is_finalized(self, obj):
+        """Returns True if booking is in a terminal state (no further changes allowed)."""
+        return obj.status in TERMINAL_STATES
 
     def validate_num_people(self, value):
         if value < 1:
@@ -147,13 +177,17 @@ class BookingSerializer(serializers.ModelSerializer):
                                          f'lng {ERNAKULAM["min_lng"]}–{ERNAKULAM["max_lng"]}).'
                     })
 
-        # ── Past-time-on-today check ──
+        # ── Time Restriction Check (at least 1 hour lead time) ──
         booking_date = attrs.get('date')
         booking_time = attrs.get('time')
         if booking_date and booking_time:
-            if booking_date == timezone.now().date() and booking_time < timezone.now().time():
+            from datetime import datetime, timedelta
+            journey_dt = timezone.make_aware(datetime.combine(booking_date, booking_time))
+            min_allowed_dt = timezone.now() + timedelta(hours=1)
+            
+            if journey_dt < min_allowed_dt:
                 raise serializers.ValidationError(
-                    {'time': 'Pickup time cannot be in the past for today\'s date.'}
+                    {'time': 'Bookings must be made at least 1 hour before journey time.'}
                 )
 
         return attrs
@@ -161,16 +195,68 @@ class BookingSerializer(serializers.ModelSerializer):
 
 class BookingStatusSerializer(serializers.ModelSerializer):
     """
-    Minimal serializer for admin: exposes status, notes, and admin_note for PATCH updates.
+    Admin serializer for status updates with strict state-machine validation.
+    Prevents invalid transitions even via direct API/Postman calls.
     """
 
     class Meta:
         model = Booking
-        fields = ['status', 'notes', 'admin_note']
+        fields = ['status', 'notes', 'admin_note', 'rejection_reason', 'vehicle']
 
     def validate_status(self, value):
-        if value not in ['pending', 'approved', 'driver_assigned', 'completed', 'rejected']:
+        allowed_values = ['pending', 'approved', 'driver_assigned', 'completed', 'rejected', 'cancelled']
+        if value not in allowed_values:
             raise serializers.ValidationError(
-                'Status must be one of: pending, approved, driver_assigned, completed, rejected.'
+                f"Status must be one of: {', '.join(allowed_values)}."
             )
         return value
+
+    def validate(self, attrs):
+        new_status = attrs.get('status')
+        if new_status and self.instance:
+            current = self.instance.status
+
+            # Block all changes on finalized bookings
+            if current in TERMINAL_STATES:
+                raise serializers.ValidationError({
+                    'status': f'This booking is {current} and cannot be modified further.'
+                })
+
+            # Validate state transition
+            allowed_next = VALID_TRANSITIONS.get(current, [])
+            if new_status not in allowed_next:
+                raise serializers.ValidationError({
+                    'status': f'Cannot transition from "{current}" to "{new_status}". '
+                              f'Allowed transitions: {", ".join(allowed_next) if allowed_next else "none"}.'
+                })
+
+            # Rejection workflow check
+            if new_status == 'rejected' and not attrs.get('rejection_reason'):
+                raise serializers.ValidationError({'rejection_reason': 'Please provide a reason for rejection.'})
+
+            # Vehicle and overlapping trip check
+            vehicle = attrs.get('vehicle') or self.instance.vehicle
+            if new_status in ['approved', 'driver_assigned']:
+                if not vehicle:
+                    raise serializers.ValidationError({'vehicle': 'A vehicle must be assigned to approve the booking.'})
+                
+                # Check overlaps
+                from datetime import datetime, timedelta
+                start_dt = timezone.make_aware(datetime.combine(self.instance.date, self.instance.time))
+                end_dt = start_dt + timedelta(hours=self.instance.expected_duration_hours)
+                
+                overlapping = Booking.objects.filter(
+                    vehicle=vehicle,
+                    status__in=['approved', 'driver_assigned']
+                ).exclude(pk=self.instance.pk)
+                
+                for b in overlapping:
+                    b_start = timezone.make_aware(datetime.combine(b.date, b.time))
+                    b_end = b_start + timedelta(hours=b.expected_duration_hours)
+                    if max(start_dt, b_start) < min(end_dt, b_end):
+                        raise serializers.ValidationError({
+                            'vehicle': f'Vehicle "{vehicle.name}" is already booked for an overlapping trip '
+                                       f'from {b.time.strftime("%I:%M %p")} to {b_end.time().strftime("%I:%M %p")} on {b.date}.'
+                        })
+
+        return attrs
