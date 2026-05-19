@@ -61,6 +61,22 @@ TEMPLATES = [
     },
 ]
 
+# ────────────────────────────────────────────────────────
+# Sentry Error Tracking (Production)
+# ────────────────────────────────────────────────────────
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+
+SENTRY_DSN = config('SENTRY_DSN', default='')
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[DjangoIntegration()],
+        traces_sample_rate=0.1,
+        send_default_pii=True,
+        environment='production' if not DEBUG else 'development'
+    )
+
 WSGI_APPLICATION = 'yescab.wsgi.application'
 
 # ────────────────────────────────────────────────────────
@@ -139,6 +155,8 @@ REST_FRAMEWORK = {
         'auth': config('AUTH_THROTTLE_RATE', default='5/15m'),
     },
     'EXCEPTION_HANDLER': 'yescab.exceptions.custom_exception_handler',
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 50,
 }
 
 # Simple JWT configuration
@@ -196,7 +214,7 @@ GOOGLE_OAUTH2_CLIENT_ID = config('GOOGLE_OAUTH2_CLIENT_ID', default='')
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
 
 # Token expiry (hours)
-PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
+PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 0.5  # 30 minutes — industry best practice
 EMAIL_VERIFY_TOKEN_EXPIRY_HOURS = 24
 
 # ────────────────────────────────────────────────────────

@@ -11,7 +11,6 @@ class BookingAdmin(admin.ModelAdmin):
     list_filter = ['status', 'trip_type', 'date']
     search_fields = ['user__email', 'user__name', 'name', 'from_location', 'to_location']
     ordering = ['-created_at']
-    list_editable = ['status']
     readonly_fields = ['created_at', 'updated_at']
     date_hierarchy = 'date'
 

@@ -126,24 +126,6 @@ def dispatch_booking_emails(booking, user_email):
     logger.info(f"Email thread dispatched for booking #{booking.id}")
 
 
-def auto_reject_expired_bookings():
-    """
-    Checks for pending bookings older than 1 hour and auto-rejects them.
-    This lightweight check runs before fetching bookings to ensure state is fresh.
-    """
-    threshold = timezone.now() - timedelta(hours=1)
-    expired = Booking.objects.filter(status='pending', created_at__lt=threshold)
-    if expired.exists():
-        for b in expired:
-            b.status = 'rejected'
-            b.rejection_reason = 'No admin response within allowed time'
-            b.save(update_fields=['status', 'rejection_reason', 'updated_at'])
-            # Attempt to send status change email, ignoring errors to prevent blocking
-            try:
-                dispatch_status_change_email(b)
-            except Exception as e:
-                logger.error(f"Auto-reject email failed for #{b.id}: {e}")
-
 class BookingListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/bookings/ — List all bookings belonging to the authenticated user.
@@ -153,9 +135,12 @@ class BookingListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        auto_reject_expired_bookings()
         # CROSS-USER DATA ACCESS FIX: Strictly limits to authenticated user
-        return Booking.objects.filter(user=self.request.user).order_by('-created_at')
+        queryset = Booking.objects.filter(user=self.request.user).select_related('vehicle').order_by('-created_at')
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
 
     def perform_create(self, serializer):
         # Automatically assign user to prevent user-injection
@@ -198,9 +183,10 @@ class BookingDetailView(generics.RetrieveAPIView):
     """
     serializer_class = BookingSerializer
     permission_classes = [IsAuthenticated]
+    lookup_field = 'public_id'
 
     def get_queryset(self):
-        return Booking.objects.filter(user=self.request.user)
+        return Booking.objects.filter(user=self.request.user).select_related('vehicle')
 
 
 # ─────────────────────────────────────────────────────
@@ -215,6 +201,7 @@ class VehicleListView(generics.ListAPIView):
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated, IsAdminUser]
     queryset = Vehicle.objects.all()
+    pagination_class = None
 
 class AdminBookingListView(generics.ListAPIView):
     """
@@ -226,9 +213,8 @@ class AdminBookingListView(generics.ListAPIView):
 
     def get_queryset(self):
         from django.db.models import Q
-        auto_reject_expired_bookings()
 
-        queryset = Booking.objects.all().select_related('user').order_by('-created_at')
+        queryset = Booking.objects.all().select_related('user', 'vehicle').order_by('-created_at')
 
         status_filter = self.request.query_params.get('status')
         trip_type_filter = self.request.query_params.get('trip_type')
@@ -247,6 +233,56 @@ class AdminBookingListView(generics.ListAPIView):
             )
 
         return queryset
+
+
+class UserStatsView(APIView):
+    """
+    GET /api/bookings/stats/
+    Returns aggregated counts for the authenticated user's dashboard StatsBar.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count, Q
+        
+        stats = Booking.objects.filter(user=request.user).aggregate(
+            total_bookings=Count('id'),
+            pending=Count('id', filter=Q(status='pending')),
+            approved=Count('id', filter=Q(status='approved')),
+            driver_assigned=Count('id', filter=Q(status='driver_assigned')),
+            completed=Count('id', filter=Q(status='completed')),
+            rejected=Count('id', filter=Q(status='rejected')),
+            cancelled=Count('id', filter=Q(status='cancelled')),
+        )
+        
+        return Response(stats)
+
+
+class AdminStatsView(APIView):
+    """
+    GET /api/bookings/admin/stats/
+    Returns aggregated counts for dashboard StatsBar.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        from accounts.models import User
+        from django.db.models import Count, Q
+        
+        users_count = User.objects.count()
+        
+        stats = Booking.objects.aggregate(
+            total_bookings=Count('id'),
+            pending=Count('id', filter=Q(status='pending')),
+            approved=Count('id', filter=Q(status='approved')),
+            driver_assigned=Count('id', filter=Q(status='driver_assigned')),
+            completed=Count('id', filter=Q(status='completed')),
+            rejected=Count('id', filter=Q(status='rejected')),
+            cancelled=Count('id', filter=Q(status='cancelled')),
+        )
+        
+        stats['users'] = users_count
+        return Response(stats)
 
 
 def _send_status_change_email(email_data):
@@ -354,18 +390,18 @@ def dispatch_status_change_email(booking):
 
 class AdminBookingStatusView(APIView):
     """
-    PATCH /api/bookings/admin/<pk>/status/
+    PATCH /api/bookings/admin/<public_id>/status/
     Admin only. Update booking status with strict state-machine enforcement.
     Finalized bookings (completed/rejected/cancelled) cannot be modified.
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
-    def patch(self, request, pk):
+    def patch(self, request, public_id):
         try:
-            booking = Booking.objects.select_related('user').get(pk=pk)
+            booking = Booking.objects.select_related('user').get(public_id=public_id)
         except Booking.DoesNotExist:
             return Response(
-                {'error': f'Booking #{pk} not found.'},
+                {'error': f'Booking #{public_id} not found.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -374,7 +410,7 @@ class AdminBookingStatusView(APIView):
         if booking.status in TERMINAL:
             label = 'cancelled by customer' if booking.status == 'cancelled' else booking.status
             return Response(
-                {'error': f'Booking #{pk} is {label} and cannot be modified.'},
+                {'error': f'Booking #{public_id} is {label} and cannot be modified.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -394,7 +430,7 @@ class AdminBookingStatusView(APIView):
 
         return Response(
             {
-                'message': f'Booking #{pk} status updated to "{booking.get_status_display()}".',
+                'message': f'Booking #{public_id} status updated to "{booking.get_status_display()}".',
                 'booking': BookingSerializer(booking).data,
             }
         )
@@ -402,18 +438,18 @@ class AdminBookingStatusView(APIView):
 
 class BookingCancelView(APIView):
     """
-    POST /api/bookings/<pk>/cancel/
+    POST /api/bookings/<public_id>/cancel/
     User only. Cancel own booking if it's in a cancellable state.
     Valid cancellable states: pending, approved, driver_assigned.
     """
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, pk):
+    def post(self, request, public_id):
         try:
-            booking = Booking.objects.select_related('user').get(pk=pk, user=request.user)
+            booking = Booking.objects.select_related('user').get(public_id=public_id, user=request.user)
         except Booking.DoesNotExist:
             return Response(
-                {'error': f'Booking #{pk} not found or you do not have permission to cancel it.'},
+                {'error': f'Booking #{public_id} not found or you do not have permission to cancel it.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -439,7 +475,7 @@ class BookingCancelView(APIView):
 
         return Response(
             {
-                'message': f'Booking #{pk} has been cancelled successfully.',
+                'message': f'Booking #{public_id} has been cancelled successfully.',
                 'booking': BookingSerializer(booking).data,
             }
         )

@@ -25,6 +25,7 @@ from .serializers import (
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
     DeleteAccountSerializer,
+    ChangeEmailSerializer,
 )
 from .permissions import IsAdminUser
 
@@ -64,21 +65,26 @@ def send_async_email(subject, body, to_email):
 
 
 def send_verification_email(user):
-    """Creates a verification token and sends the verification email."""
+    """Creates a verification token and sends the verification email to email or pending_email."""
     token = EmailVerificationToken.objects.create(user=user)
     verify_url = f'{settings.FRONTEND_URL}/verify-email?token={token.token}'
+    target_email = user.pending_email if user.pending_email else user.email
+    is_change = bool(user.pending_email)
+    
+    msg_body = (
+        f'Hello {user.name},\n\n'
+        f'Please verify your {"new " if is_change else ""}email address '
+        f'by clicking the link below:\n\n'
+        f'{verify_url}\n\n'
+        f'This link expires in {settings.EMAIL_VERIFY_TOKEN_EXPIRY_HOURS} hours.\n\n'
+        f'If you did not request this, please ignore this email.\n\n'
+        f'— YesCab Team'
+    )
+    
     send_async_email(
         'Verify Your Email — YesCab',
-        (
-            f'Hello {user.name},\n\n'
-            f'Thank you for registering with YesCab! Please verify your email address '
-            f'by clicking the link below:\n\n'
-            f'{verify_url}\n\n'
-            f'This link expires in {settings.EMAIL_VERIFY_TOKEN_EXPIRY_HOURS} hours.\n\n'
-            f'If you did not create this account, please ignore this email.\n\n'
-            f'— YesCab Team'
-        ),
-        user.email,
+        msg_body,
+        target_email,
     )
 
 
@@ -130,7 +136,12 @@ class LoginView(APIView):
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            email = request.data.get('email', '(none)')
+            logger.warning(f'Failed login attempt for email: {email} from IP: {request.META.get("REMOTE_ADDR")}')
+            raise
         user = serializer.validated_data['user']
         refresh = RefreshToken.for_user(user)
         return Response(
@@ -195,6 +206,33 @@ class ChangePasswordView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'message': 'Password changed successfully.'})
+
+
+class ChangeEmailView(APIView):
+    """
+    POST /api/auth/change-email/
+    Authenticated. Sets pending_email and sends verification link.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        serializer = ChangeEmailSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        
+        user = request.user
+        new_email = serializer.validated_data['new_email']
+        
+        user.pending_email = new_email
+        user.save(update_fields=['pending_email'])
+        
+        # Invalidate old verification tokens
+        EmailVerificationToken.objects.filter(user=user, is_used=False).update(is_used=True)
+        
+        send_verification_email(user)
+        logger.info(f'Email change requested for {user.email} -> {new_email}')
+        return Response({'message': 'Verification email sent to the new address. Please verify to confirm the change.'})
 
 
 # ─────────────────────────────────────────────────────
@@ -317,8 +355,14 @@ class VerifyEmailView(APIView):
             )
 
         user = token_obj.user
+        
+        if user.pending_email:
+            logger.info(f'User {user.email} changed email to {user.pending_email}')
+            user.email = user.pending_email
+            user.pending_email = None
+            
         user.is_email_verified = True
-        user.save(update_fields=['is_email_verified'])
+        user.save(update_fields=['email', 'pending_email', 'is_email_verified'])
 
         token_obj.is_used = True
         token_obj.save()

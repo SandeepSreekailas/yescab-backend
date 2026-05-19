@@ -48,6 +48,10 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=True,
         help_text='True = existing/Google users. New registrations set to False until verified.'
     )
+    pending_email = models.EmailField(
+        blank=True, null=True,
+        help_text='Stores new email until it is verified.'
+    )
     date_joined = models.DateTimeField(default=timezone.now)
 
     objects = UserManager()

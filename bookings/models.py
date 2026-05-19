@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+import uuid
 
 class Vehicle(models.Model):
     STATUS_CHOICES = [
@@ -40,6 +41,12 @@ class Booking(models.Model):
         related_name='bookings',
         verbose_name='Customer',
     )
+    public_id = models.UUIDField(
+        default=uuid.uuid4, 
+        editable=False, 
+        unique=True,
+        verbose_name='Public ID'
+    )
     trip_type = models.CharField(
         max_length=20,
         choices=TRIP_TYPES,
@@ -72,6 +79,7 @@ class Booking(models.Model):
         max_length=20,
         choices=STATUS_CHOICES,
         default='pending',
+        db_index=True,
         verbose_name='Booking Status',
     )
     admin_note = models.TextField(blank=True, null=True, verbose_name='Admin Note')
@@ -89,6 +97,12 @@ class Booking(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Booking'
         verbose_name_plural = 'Bookings'
+        indexes = [
+            models.Index(fields=['status', 'created_at'], name='idx_booking_status_created'),
+            models.Index(fields=['user', '-created_at'], name='idx_booking_user_created'),
+            models.Index(fields=['date'], name='idx_booking_date'),
+            models.Index(fields=['vehicle', 'status'], name='idx_booking_vehicle_status'),
+        ]
 
     def __str__(self):
         return (

@@ -15,6 +15,7 @@ from .views import (
     VerifyEmailView,
     ResendVerificationView,
     DeleteAccountView,
+    ChangeEmailView,
 )
 
 urlpatterns = [
@@ -36,6 +37,7 @@ urlpatterns = [
     # User profile
     path('profile/', UserProfileView.as_view(), name='auth_profile'),
     path('change-password/', ChangePasswordView.as_view(), name='auth_change_password'),
+    path('change-email/', ChangeEmailView.as_view(), name='auth_change_email'),
     path('delete-account/', DeleteAccountView.as_view(), name='auth_delete_account'),
 
     # Admin — user management

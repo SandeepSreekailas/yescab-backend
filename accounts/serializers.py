@@ -255,3 +255,25 @@ class DeleteAccountSerializer(serializers.Serializer):
         if user.has_usable_password() and not user.check_password(value):
             raise serializers.ValidationError('Password is incorrect.')
         return value
+
+
+class ChangeEmailSerializer(serializers.Serializer):
+    """Requires password confirmation to change email, sets pending_email."""
+    password = serializers.CharField(write_only=True, style={'input_type': 'password'})
+    new_email = serializers.EmailField()
+
+    def validate_password(self, value):
+        user = self.context['request'].user
+        if user.has_usable_password() and not user.check_password(value):
+            raise serializers.ValidationError('Password is incorrect.')
+        return value
+
+    def validate_new_email(self, value):
+        new_email = value.lower()
+        user = self.context['request'].user
+        if user.email == new_email:
+            raise serializers.ValidationError('This is already your current email.')
+        if User.objects.filter(email=new_email).exists():
+            raise serializers.ValidationError('An account with this email already exists.')
+        return new_email
+

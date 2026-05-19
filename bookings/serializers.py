@@ -27,6 +27,7 @@ class BookingSerializer(serializers.ModelSerializer):
     Full booking serializer. Includes display-friendly fields for trip type and status.
     User is set automatically from the request; read-only for API consumers.
     """
+    id = serializers.UUIDField(source='public_id', read_only=True)
     user_info = UserSerializer(source='user', read_only=True)
     trip_type_display = serializers.CharField(source='get_trip_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
@@ -198,6 +199,9 @@ class BookingStatusSerializer(serializers.ModelSerializer):
     Admin serializer for status updates with strict state-machine validation.
     Prevents invalid transitions even via direct API/Postman calls.
     """
+
+    notes = serializers.CharField(max_length=2000, required=False, allow_blank=True)
+    admin_note = serializers.CharField(max_length=2000, required=False, allow_blank=True)
 
     class Meta:
         model = Booking
